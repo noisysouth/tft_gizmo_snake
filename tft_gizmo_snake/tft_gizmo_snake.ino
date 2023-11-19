@@ -56,7 +56,8 @@ Adafruit_ST7789 tft = Adafruit_ST7789(spi, TFT_CS, TFT_DC, TFT_RST);
 
 #define CELLS_X (PIXELS_X/CELL_PIXELS)
 #define CELLS_Y (PIXELS_Y/CELL_PIXELS)
-#define MAX_SEGMENTS 100
+//#define MAX_SEGMENTS 100
+#define MAX_SEGMENTS 999
 
 enum direction_e {
   dir_north = 0,
@@ -89,12 +90,14 @@ struct game_cell_s worm_cells[MAX_SEGMENTS];
 int worm_cell_count;
 //int worm_delay;
 
+#if 0
 // when the counter reaches the target, we will do an event.
 struct game_event_s {
   int counter;
   int target;
 };
-struct game_event_s pill_event;
+//struct game_event_s pill_event;
+#endif
 
 // print ":(x, y) " coordinates of worm_cell
 // Helper for print_worm()
@@ -149,8 +152,8 @@ void start_game(void) {
   pill_cell.y = -1;
   missed_cell.x = -1;
   missed_cell.y = -1;
-  pill_event.counter = 0;
-  pill_event.target = 100;
+//  pill_event.counter = 0;
+//  pill_event.target = 100;
   print_worm();
 }
 
@@ -252,6 +255,18 @@ void draw_game(void) {
   draw_segment (&missed_cell,   ST77XX_BLACK);
   missed_cell.x = -1;
   missed_cell.y = -1;
+}
+
+bool is_in_score(struct game_cell_s *test_cell) {
+  int x, y;
+
+  x = (test_cell->x+1) * CELL_PIXELS;
+  y = (test_cell->y+1) * CELL_PIXELS;
+  if (x <= SCORE_WIDTH &&
+      y <= SCORE_HEIGHT) {
+        return true;
+  }
+  return false;
 }
 
 void draw_banner (uint16_t color) {
@@ -378,32 +393,37 @@ void loop() {
 
   walk_player();
 
-  pill_event.counter++;
-  if (pill_event.counter >= pill_event.target) {
-    bool pill_ok;
-    int cell_idx;
+  if (pill_cell.x == -1 &&
+      pill_cell.y == -1) {
+    //pill_event.counter++;
+    //if (pill_event.counter >= pill_event.target) {
+      bool pill_ok;
+      int cell_idx;
 
-    pill_event.counter = 0;
-    // place a new pill, but not on the worm.
-    do {
-      if (pill_cell.x != -1 ||
-          pill_cell.y != -1) {
-          missed_cell.x = pill_cell.x;
-          missed_cell.y = pill_cell.y;
-      }
-      pill_cell.x = random(0, CELLS_X);
-      pill_cell.y = random(0, CELLS_Y);
-      pill_ok = true;
-      for (cell_idx = 0; cell_idx < worm_cell_count; cell_idx++) {
-        if (worm_cells[cell_idx].x == pill_cell.x &&
-            worm_cells[cell_idx].y == pill_cell.y) {
-          pill_ok = false;
-          break;
+      //pill_event.counter = 0;
+      // place a new pill, but not on the worm.
+      do {
+        if (pill_cell.x != -1 ||
+            pill_cell.y != -1) {
+            missed_cell.x = pill_cell.x;
+            missed_cell.y = pill_cell.y;
         }
-      }
-    } while (!pill_ok);
-
-  }
+        pill_cell.x = random(0, CELLS_X);
+        pill_cell.y = random(0, CELLS_Y);
+        pill_ok = true;
+        if (is_in_score(&pill_cell)) {
+          pill_ok = false;
+        }
+        for (cell_idx = 0; cell_idx < worm_cell_count; cell_idx++) {
+          if (worm_cells[cell_idx].x == pill_cell.x &&
+              worm_cells[cell_idx].y == pill_cell.y) {
+            pill_ok = false;
+            break;
+          }
+        }
+      } while (!pill_ok);
+    //}
+  } // end if pill_cell.x == -1, .y == -1
   draw_game();
 
   delay(100);
