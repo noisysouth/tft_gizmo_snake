@@ -18,6 +18,7 @@
 #include <Adafruit_GFX.h>    // Core graphics library
 #include <Adafruit_ST7789.h> // Hardware-specific library for ST7789
 #include <SPI.h>
+#include "pitches.h"
 
 //#define DEBUG_BUTTONS
 //#define DEBUG_MOVING
@@ -67,6 +68,92 @@ enum direction_e {
   direction_count,
 };
 
+struct speaker_note_s {
+  int tone_Hz; // =1 = end of sequence
+  int note_length; // 4=4th note, 8=8th note
+};
+
+#if 0 // shave and a haircut
+struct speaker_note_s notes_intro[] = {
+  { NOTE_C4, 4, },
+  { NOTE_G3, 8, },
+  { NOTE_G3, 8, },
+  { NOTE_A3, 4, },
+  { NOTE_G3, 4, },
+  { 0,       4, }, // silent
+  { NOTE_B3, 4, },
+  { NOTE_C4, 4, },
+  { -1,     -1, },
+};
+#endif
+struct speaker_note_s notes_intro1[] = {
+  { NOTE_C4, 4, },
+  { NOTE_G3, 8, },
+  { NOTE_G3, 8, },
+  { -1,     -1, },
+};
+
+struct speaker_note_s notes_intro2[] = {
+  { NOTE_A3, 4, },
+  { NOTE_G3, 4, },
+  { 0,       4, }, // silent
+  { -1,     -1, },
+};
+
+struct speaker_note_s notes_intro3[] = {
+  { NOTE_B3, 4, },
+  { NOTE_C4, 4, },
+  { -1,     -1, },
+};
+
+struct speaker_note_s notes_pill[] = {
+  { 5500,   10, },
+  { -1,     -1, },
+};
+
+struct speaker_note_s notes_stop[] = {
+  { 500,    10, },
+  { -1,     -1, },
+};
+
+struct speaker_note_s notes_go[] = {
+  { 2000,    10, },
+  { 3500,    10, },
+  { -1,     -1, },
+};
+
+enum game_sound_e {
+  sound_intro1 = 0,
+  sound_intro2,
+  sound_intro3,
+  sound_pill,
+  sound_go,
+  sound_stop,
+  sound_die, // TBD
+  game_sound_count,
+};
+
+struct sound_notes_s {
+  int                    which_sound; // -1 = end of list
+  struct speaker_note_s *sound_notes;
+};
+
+struct sound_notes_s game_sounds[] {
+  { sound_intro1, notes_intro1, },
+  { sound_intro2, notes_intro2, },
+  { sound_intro3, notes_intro3, },
+  { sound_pill,  notes_pill, },
+  { sound_go,    notes_go, },
+  { sound_stop,  notes_stop, },
+  { -1,  NULL, },
+};
+
+// when the counter reaches the target, we will do an event.
+struct game_event_s {
+  int counter;
+  int target;
+};
+
 float p = 3.1415926;
 
 // input button state
@@ -90,14 +177,7 @@ struct game_cell_s worm_cells[MAX_SEGMENTS];
 int worm_cell_count;
 //int worm_delay;
 
-#if 0
-// when the counter reaches the target, we will do an event.
-struct game_event_s {
-  int counter;
-  int target;
-};
 //struct game_event_s pill_event;
-#endif
 
 // print ":(x, y) " coordinates of worm_cell
 // Helper for print_worm()
@@ -125,6 +205,65 @@ void print_worm(void) {
   }
   Serial.println();
 #endif
+}
+
+void start_sound(int which_sound) {
+  int sound_idx;
+  bool more_sounds = true;
+  bool found_sound = false;
+  int note_idx;
+  bool more_notes = true;
+  int tone_Hz;
+  int note_length;
+  int note_ms;
+  int pause_ms;
+
+  CircuitPlayground.speaker.enable(false);
+  if (CircuitPlayground.slideSwitch()) {
+    // Sound is off
+    return;
+  }
+  // Sound is on
+  CircuitPlayground.speaker.enable(true);
+  sound_idx = 0;
+  do {
+    if (game_sounds[sound_idx].which_sound < 0) { // end of list
+      more_sounds = false;
+      continue;
+    }
+    if (game_sounds[sound_idx].which_sound == which_sound) {
+      found_sound = true;
+      continue;
+    }
+    sound_idx++;
+  } while (more_sounds && !found_sound);
+  if (!found_sound) {
+    return;
+  }
+
+  note_idx = 0;
+  do {
+    tone_Hz     = game_sounds[sound_idx].sound_notes[note_idx].tone_Hz;
+    note_length = game_sounds[sound_idx].sound_notes[note_idx].note_length;
+
+    if (tone_Hz < 0) {
+      more_notes = false;
+      continue;
+    }
+
+    if (CircuitPlayground.slideSwitch()) {
+      // Sound is off
+      return;
+    }
+
+    note_ms = 1000 / note_length;
+    CircuitPlayground.playTone(tone_Hz, note_ms);
+
+    //pause_ms = note_ms * 1.30;
+    //delay(pause_ms);
+
+    note_idx++;
+  } while (more_notes);
 }
 
 // initialize player and world state to starting conditions
@@ -159,10 +298,12 @@ void start_game(void) {
 
 void walk_player(void) {
   int cell_idx;
-  bool do_walk = true;
+  static bool did_walk = false;
+  bool         do_walk = true;
 
   switch (player_dir) {
   case dir_east:
+    //is_in_score
     player_cell.x++;
     break;
   case dir_west:
@@ -196,11 +337,19 @@ void walk_player(void) {
     do_walk = false;
   }
 
+  if (did_walk && !do_walk) {
+    start_sound (sound_stop);
+  }
+  if (do_walk && !did_walk) {
+    start_sound (sound_go);
+  }
+
   if (do_walk) {
     if (player_cell.x == pill_cell.x &&
         player_cell.y == pill_cell.y) {
       pill_cell.x = -1;
       pill_cell.y = -1;
+      start_sound (sound_pill);
       if (worm_cell_count < MAX_SEGMENTS) {
         worm_cell_count++;
       }
@@ -219,29 +368,50 @@ void walk_player(void) {
     tail_cell.y = -1;
   }
   print_worm();
-}
 
-void draw_segment(struct game_cell_s *worm_cell, uint16_t color) {
-  int x, y, radius;
-
-  if (x < 0 || x >= CELLS_X ||
-      y < 0 || y >= CELLS_Y) {
-      return; // off-screen location, don't draw
-  }
-  radius = CELL_PIXELS/2;
-  x = worm_cell->x * CELL_PIXELS + radius;
-  y = worm_cell->y * CELL_PIXELS + radius;
-  tft.fillCircle(x, y, radius, color);
+  did_walk = do_walk;
 }
 
 #define SCORE_WIDTH  70
 #define SCORE_HEIGHT 28
+bool is_in_score(struct game_cell_s *test_cell) {
+  int x, y;
+
+  x = (test_cell->x+1) * CELL_PIXELS;
+  y = (test_cell->y  ) * CELL_PIXELS;
+  if (x <= SCORE_WIDTH &&
+      y <= SCORE_HEIGHT) {
+        return true;
+  }
+  return false;
+}
+
+void draw_segment(struct game_cell_s *draw_cell, uint16_t color) {
+  int x, y, radius;
+
+  if (draw_cell->x < 0 || draw_cell->x >= CELLS_X ||
+      draw_cell->y < 0 || draw_cell->y >= CELLS_Y ||
+      is_in_score (draw_cell)) {
+      return; // off-screen location, don't draw
+  }
+  radius = CELL_PIXELS/2;
+  x = draw_cell->x * CELL_PIXELS + radius;
+  y = draw_cell->y * CELL_PIXELS + radius;
+  tft.fillCircle(x, y, radius, color);
+}
+
 void draw_game(void) {
   // draw score
-  // background
-  tft.fillRect(0, 0, SCORE_WIDTH, SCORE_HEIGHT, ST77XX_BLACK);
-  // number
-  our_drawnum (worm_cell_count, ST77XX_GREEN);
+  static int score_old = -1;
+
+  if (score_old != worm_cell_count) { // score changed; redraw it
+    // background
+    tft.fillRect(0, 0, SCORE_WIDTH, SCORE_HEIGHT, ST77XX_BLACK);
+    // number
+    our_drawnum (worm_cell_count, ST77XX_GREEN);
+
+    score_old = worm_cell_count; // save the new score
+  }
 
   // worm head
   draw_segment (&worm_cells[0], ST77XX_GREEN);
@@ -257,22 +427,9 @@ void draw_game(void) {
   missed_cell.y = -1;
 }
 
-bool is_in_score(struct game_cell_s *test_cell) {
-  int x, y;
-
-  x = (test_cell->x+1) * CELL_PIXELS;
-  y = (test_cell->y+1) * CELL_PIXELS;
-  if (x <= SCORE_WIDTH &&
-      y <= SCORE_HEIGHT) {
-        return true;
-  }
-  return false;
-}
-
 void draw_banner (uint16_t color) {
   our_drawtext("Welcome to", -1, color);
   our_drawtext("Wormy!", 0, color);
-  delay(1000);
 }
 
 void setup(void) {
@@ -294,58 +451,13 @@ void setup(void) {
 
   Serial.println(time, DEC);
   draw_banner (ST77XX_WHITE);
+  start_sound (sound_intro1);
   draw_banner (ST77XX_MAGENTA);
+  start_sound (sound_intro2);
   draw_banner (ST77XX_GREEN);
+  start_sound (sound_intro3);
   delay(2000);
   tft.fillScreen(ST77XX_BLACK);
-#if 0
-  delay(500);
-
-  // large block of text
-  tft.fillScreen(ST77XX_BLACK);
-  testdrawtext("Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur adipiscing ante sed nibh tincidunt feugiat. Maecenas enim massa, fringilla sed malesuada et, malesuada sit amet turpis. Sed porttitor neque ut ante pretium vitae malesuada nunc bibendum. Nullam aliquet ultrices massa eu hendrerit. Ut sed nisi lorem. In vestibulum purus a tortor imperdiet posuere. ", ST77XX_WHITE);
-  delay(1000);
-
-  // tft print function!
-  tftPrintTest();
-  delay(4000);
-#endif
-  // a single pixel
-  //tft.drawPixel(tft.width()/2, tft.height()/2, ST77XX_GREEN);
-#if 0
-  delay(500);
-
-  // line draw test
-  testlines(ST77XX_YELLOW);
-  delay(500);
-
-  // optimized lines
-  testfastlines(ST77XX_RED, ST77XX_BLUE);
-  delay(500);
-
-  testdrawrects(ST77XX_GREEN);
-  delay(500);
-
-  testfillrects(ST77XX_YELLOW, ST77XX_MAGENTA);
-  delay(500);
-
-  tft.fillScreen(ST77XX_BLACK);
-  testfillcircles(10, ST77XX_BLUE);
-  testdrawcircles(10, ST77XX_WHITE);
-  delay(500);
-
-  testroundrects();
-  delay(500);
-
-  testtriangles();
-  delay(500);
-
-  mediabuttons();
-  delay(500);
-
-  Serial.println("done");
-  delay(1000);
-#endif
   start_game();
   draw_game();
 }
@@ -429,48 +541,6 @@ void loop() {
   delay(100);
 }
 
-void testlines(uint16_t color) {
-  tft.fillScreen(ST77XX_BLACK);
-  for (int16_t x=0; x < tft.width(); x+=6) {
-    tft.drawLine(0, 0, x, tft.height()-1, color);
-    delay(0);
-  }
-  for (int16_t y=0; y < tft.height(); y+=6) {
-    tft.drawLine(0, 0, tft.width()-1, y, color);
-    delay(0);
-  }
-
-  tft.fillScreen(ST77XX_BLACK);
-  for (int16_t x=0; x < tft.width(); x+=6) {
-    tft.drawLine(tft.width()-1, 0, x, tft.height()-1, color);
-    delay(0);
-  }
-  for (int16_t y=0; y < tft.height(); y+=6) {
-    tft.drawLine(tft.width()-1, 0, 0, y, color);
-    delay(0);
-  }
-
-  tft.fillScreen(ST77XX_BLACK);
-  for (int16_t x=0; x < tft.width(); x+=6) {
-    tft.drawLine(0, tft.height()-1, x, 0, color);
-    delay(0);
-  }
-  for (int16_t y=0; y < tft.height(); y+=6) {
-    tft.drawLine(0, tft.height()-1, tft.width()-1, y, color);
-    delay(0);
-  }
-
-  tft.fillScreen(ST77XX_BLACK);
-  for (int16_t x=0; x < tft.width(); x+=6) {
-    tft.drawLine(tft.width()-1, tft.height()-1, x, 0, color);
-    delay(0);
-  }
-  for (int16_t y=0; y < tft.height(); y+=6) {
-    tft.drawLine(tft.width()-1, tft.height()-1, 0, y, color);
-    delay(0);
-  }
-}
-
 #define LINE_PIXELS 20
 void our_drawtext(char *text, int line, uint16_t color) {
   //int char_count;
@@ -489,144 +559,4 @@ void our_drawnum(int num, uint16_t color) {
   tft.setTextColor(color);
   tft.setTextWrap(true);
   tft.print(num);
-}
-
-void testfastlines(uint16_t color1, uint16_t color2) {
-  tft.fillScreen(ST77XX_BLACK);
-  for (int16_t y=0; y < tft.height(); y+=5) {
-    tft.drawFastHLine(0, y, tft.width(), color1);
-  }
-  for (int16_t x=0; x < tft.width(); x+=5) {
-    tft.drawFastVLine(x, 0, tft.height(), color2);
-  }
-}
-
-void testdrawrects(uint16_t color) {
-  tft.fillScreen(ST77XX_BLACK);
-  for (int16_t x=0; x < tft.width(); x+=6) {
-    tft.drawRect(tft.width()/2 -x/2, tft.height()/2 -x/2 , x, x, color);
-  }
-}
-
-void testfillrects(uint16_t color1, uint16_t color2) {
-  tft.fillScreen(ST77XX_BLACK);
-  for (int16_t x=tft.width()-1; x > 6; x-=6) {
-    tft.fillRect(tft.width()/2 -x/2, tft.height()/2 -x/2 , x, x, color1);
-    tft.drawRect(tft.width()/2 -x/2, tft.height()/2 -x/2 , x, x, color2);
-  }
-}
-
-void testfillcircles(uint8_t radius, uint16_t color) {
-  for (int16_t x=radius; x < tft.width(); x+=radius*2) {
-    for (int16_t y=radius; y < tft.height(); y+=radius*2) {
-      tft.fillCircle(x, y, radius, color);
-    }
-  }
-}
-
-void testdrawcircles(uint8_t radius, uint16_t color) {
-  for (int16_t x=0; x < tft.width()+radius; x+=radius*2) {
-    for (int16_t y=0; y < tft.height()+radius; y+=radius*2) {
-      tft.drawCircle(x, y, radius, color);
-    }
-  }
-}
-
-void testtriangles() {
-  tft.fillScreen(ST77XX_BLACK);
-  uint16_t color = 0xF800;
-  int t;
-  int w = tft.width()/2;
-  int x = tft.height()-1;
-  int y = 0;
-  int z = tft.width();
-  for(t = 0 ; t <= 15; t++) {
-    tft.drawTriangle(w, y, y, x, z, x, color);
-    x-=4;
-    y+=4;
-    z-=4;
-    color+=100;
-  }
-}
-
-void testroundrects() {
-  tft.fillScreen(ST77XX_BLACK);
-  uint16_t color = 100;
-  int i;
-  int t;
-  for(t = 0 ; t <= 4; t+=1) {
-    int x = 0;
-    int y = 0;
-    int w = tft.width()-2;
-    int h = tft.height()-2;
-    for(i = 0 ; i <= 16; i+=1) {
-      tft.drawRoundRect(x, y, w, h, 5, color);
-      x+=2;
-      y+=3;
-      w-=4;
-      h-=6;
-      color+=1100;
-    }
-    color+=100;
-  }
-}
-
-void tftPrintTest() {
-  tft.setTextWrap(false);
-  tft.fillScreen(ST77XX_BLACK);
-  tft.setCursor(0, 30);
-  tft.setTextColor(ST77XX_RED);
-  tft.setTextSize(1);
-  tft.println("Hello World!");
-  tft.setTextColor(ST77XX_YELLOW);
-  tft.setTextSize(2);
-  tft.println("Hello World!");
-  tft.setTextColor(ST77XX_GREEN);
-  tft.setTextSize(3);
-  tft.println("Hello World!");
-  tft.setTextColor(ST77XX_BLUE);
-  tft.setTextSize(4);
-  tft.print(1234.567);
-  delay(1500);
-  tft.setCursor(0, 0);
-  tft.fillScreen(ST77XX_BLACK);
-  tft.setTextColor(ST77XX_WHITE);
-  tft.setTextSize(0);
-  tft.println("Hello World!");
-  tft.setTextSize(1);
-  tft.setTextColor(ST77XX_GREEN);
-  tft.print(p, 6);
-  tft.println(" Want pi?");
-  tft.println(" ");
-  tft.print(8675309, HEX); // print 8,675,309 out in HEX!
-  tft.println(" Print HEX!");
-  tft.println(" ");
-  tft.setTextColor(ST77XX_WHITE);
-  tft.println("Sketch has been");
-  tft.println("running for: ");
-  tft.setTextColor(ST77XX_MAGENTA);
-  tft.print(millis() / 1000);
-  tft.setTextColor(ST77XX_WHITE);
-  tft.print(" seconds.");
-}
-
-void mediabuttons() {
-  // play
-  tft.fillScreen(ST77XX_BLACK);
-  tft.fillRoundRect(25, 10, 78, 60, 8, ST77XX_WHITE);
-  tft.fillTriangle(42, 20, 42, 60, 90, 40, ST77XX_RED);
-  delay(500);
-  // pause
-  tft.fillRoundRect(25, 90, 78, 60, 8, ST77XX_WHITE);
-  tft.fillRoundRect(39, 98, 20, 45, 5, ST77XX_GREEN);
-  tft.fillRoundRect(69, 98, 20, 45, 5, ST77XX_GREEN);
-  delay(500);
-  // play color
-  tft.fillTriangle(42, 20, 42, 60, 90, 40, ST77XX_BLUE);
-  delay(50);
-  // pause color
-  tft.fillRoundRect(39, 98, 20, 45, 5, ST77XX_RED);
-  tft.fillRoundRect(69, 98, 20, 45, 5, ST77XX_RED);
-  // play color
-  tft.fillTriangle(42, 20, 42, 60, 90, 40, ST77XX_GREEN);
 }
