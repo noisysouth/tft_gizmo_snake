@@ -21,6 +21,7 @@
 
 //#define DEBUG_BUTTONS
 //#define DEBUG_MOVING
+//#define DEBUG_SEGMENTS
 
 // Because of the limited number of pins available on the Circuit Playground Boards
 // Software SPI is used
@@ -48,32 +49,226 @@ Adafruit_ST7789 tft = Adafruit_ST7789(spi, TFT_CS, TFT_DC, TFT_RST);
 //#define TFT_SCLK      PIN_WIRE_SCL  // Clock out
 //Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
 
-#define MAX_X 240
-#define MAX_Y 240
+#define PIXELS_X 240
+#define PIXELS_Y 240
+
+#define CELL_PIXELS 10
+
+#define CELLS_X (PIXELS_X/CELL_PIXELS)
+#define CELLS_Y (PIXELS_Y/CELL_PIXELS)
+#define MAX_SEGMENTS 100
+
+enum direction_e {
+  dir_north = 0,
+  dir_east,
+  dir_south,
+  dir_west,
+  direction_count,
+};
 
 float p = 3.1415926;
+
+// input button state
 bool left_btn;
 bool right_btn;
 bool left_old;
 bool right_old;
-int player_x = MAX_X/2;
-int player_y = MAX_Y/2;
-int moving_x = 1;
-int moving_y = 0;
 
-void draw_player(void) {
-  tft.drawPixel(player_x, player_y, ST77XX_GREEN);
+// game state
+struct game_cell_s {
+  int x, y;
+};
+struct game_cell_s player_cell;
+int player_dir; // -1 to turn left, +1 to turn right: so use int for this math, not enum
+struct game_cell_s pill_cell; // pill the worm can eat go grow longer at this x,y
+struct game_cell_s missed_cell; // player did not get the pill. hide it.
+
+struct game_cell_s tail_cell;
+// do the worm `-_/~
+struct game_cell_s worm_cells[MAX_SEGMENTS];
+int worm_cell_count;
+//int worm_delay;
+
+// when the counter reaches the target, we will do an event.
+struct game_event_s {
+  int counter;
+  int target;
+};
+struct game_event_s pill_event;
+
+// print ":(x, y) " coordinates of worm_cell
+// Helper for print_worm()
+void print_cell(struct game_cell_s *worm_cell) {
+    Serial.print(":(");
+    Serial.print(worm_cell->x);
+    Serial.print(",");
+    Serial.print(worm_cell->y);
+    Serial.print(") ");
+}
+
+// Debug output of tail_cell, worm_cells[] x, y coordinates
+void print_worm(void) {
+#ifdef DEBUG_SEGMENTS
+  int cell_idx;
+
+  Serial.print("tail_cell");
+  print_cell(&tail_cell);
+  Serial.print(" ");
+  Serial.print(worm_cell_count);
+  Serial.print(" worm_cells: ");
+  for (cell_idx = 0; cell_idx < worm_cell_count; cell_idx++) {
+    Serial.print(cell_idx);
+    print_cell(&worm_cells[cell_idx]);
+  }
+  Serial.println();
+#endif
+}
+
+// initialize player and world state to starting conditions
+void start_game(void) {
+  int cell_idx;
+  //worm_cell_count = 99; // worm starts long
+  //worm_cell_count = 4; // worm starts short
+  worm_cell_count = 1; // worm starts stubby
+
+  // set where head of worm will be
+  player_cell.x = CELLS_X/2;
+  player_cell.y = CELLS_Y/2;
+  player_dir = dir_east;
+
+  // add worm's starting segments
+  for (cell_idx = 0; cell_idx < worm_cell_count; cell_idx++) {
+    worm_cells[cell_idx].x = player_cell.x-cell_idx-1;
+    worm_cells[cell_idx].y = player_cell.y;
+  }
+  // not trying to erase a tail right now
+  tail_cell.x = -1;
+  tail_cell.y = -1;
+  // no pill on screen yet
+  pill_cell.x = -1;
+  pill_cell.y = -1;
+  missed_cell.x = -1;
+  missed_cell.y = -1;
+  pill_event.counter = 0;
+  pill_event.target = 100;
+  print_worm();
+}
+
+void walk_player(void) {
+  int cell_idx;
+  bool do_walk = true;
+
+  switch (player_dir) {
+  case dir_east:
+    player_cell.x++;
+    break;
+  case dir_west:
+    player_cell.x--;
+    break;
+  case dir_north:
+    player_cell.y--;
+    break;
+  case dir_south:
+    player_cell.y++;
+    break;
+  default: // should not occur
+    break;
+  }
+
+  // stay in cell bounds
+  if (player_cell.x < 0) {
+    player_cell.x = 0;
+    do_walk = false; // no change to cells
+  }
+  if (player_cell.y < 0) {
+    player_cell.y = 0;
+    do_walk = false;
+  }
+  if (player_cell.x >= CELLS_X) {
+    player_cell.x = CELLS_X-1;
+    do_walk = false;
+  }
+  if (player_cell.y >= CELLS_Y) {
+    player_cell.y = CELLS_Y-1;
+    do_walk = false;
+  }
+
+  if (do_walk) {
+    if (player_cell.x == pill_cell.x &&
+        player_cell.y == pill_cell.y) {
+      pill_cell.x = -1;
+      pill_cell.y = -1;
+      if (worm_cell_count < MAX_SEGMENTS) {
+        worm_cell_count++;
+      }
+    }
+
+    tail_cell.x = worm_cells[worm_cell_count-1].x;
+    tail_cell.y = worm_cells[worm_cell_count-1].y;
+    for (cell_idx = worm_cell_count-1; cell_idx >= 1; cell_idx--) {
+      worm_cells[cell_idx].x = worm_cells[cell_idx-1].x;
+      worm_cells[cell_idx].y = worm_cells[cell_idx-1].y;
+    }
+    worm_cells[0].x = player_cell.x;
+    worm_cells[0].y = player_cell.y;
+  } else { // don't try to erase tail anymore: not moving.
+    tail_cell.x = -1;
+    tail_cell.y = -1;
+  }
+  print_worm();
+}
+
+void draw_segment(struct game_cell_s *worm_cell, uint16_t color) {
+  int x, y, radius;
+
+  if (x < 0 || x >= CELLS_X ||
+      y < 0 || y >= CELLS_Y) {
+      return; // off-screen location, don't draw
+  }
+  radius = CELL_PIXELS/2;
+  x = worm_cell->x * CELL_PIXELS + radius;
+  y = worm_cell->y * CELL_PIXELS + radius;
+  tft.fillCircle(x, y, radius, color);
+}
+
+#define SCORE_WIDTH  70
+#define SCORE_HEIGHT 28
+void draw_game(void) {
+  // draw score
+  // background
+  tft.fillRect(0, 0, SCORE_WIDTH, SCORE_HEIGHT, ST77XX_BLACK);
+  // number
+  our_drawnum (worm_cell_count, ST77XX_GREEN);
+
+  // worm head
+  draw_segment (&worm_cells[0], ST77XX_GREEN);
+  // erase old worm tail
+  draw_segment (&tail_cell,     ST77XX_BLACK);
+
+  // pill!
+  draw_segment (&pill_cell,     ST77XX_YELLOW);
+
+  // erase old pill
+  draw_segment (&missed_cell,   ST77XX_BLACK);
+  missed_cell.x = -1;
+  missed_cell.y = -1;
+}
+
+void draw_banner (uint16_t color) {
+  our_drawtext("Welcome to", -1, color);
+  our_drawtext("Wormy!", 0, color);
+  delay(1000);
 }
 
 void setup(void) {
   Serial.begin(9600);
-  Serial.print(F("Hello! Gizmo TFT Test"));
+  Serial.print(F("Hello! Welcome to wormy serial port!"));
   CircuitPlayground.begin();
 
   pinMode(TFT_BACKLIGHT, OUTPUT);
   digitalWrite(TFT_BACKLIGHT, HIGH); // Backlight on
 
-  tft.init(MAX_X, MAX_Y);                // Init ST7789 240x240
+  tft.init(PIXELS_X, PIXELS_Y);                // Init ST7789 240x240
   tft.setRotation(2);
 
   Serial.println(F("Initialized"));
@@ -83,6 +278,11 @@ void setup(void) {
   time = millis() - time;
 
   Serial.println(time, DEC);
+  draw_banner (ST77XX_WHITE);
+  draw_banner (ST77XX_MAGENTA);
+  draw_banner (ST77XX_GREEN);
+  delay(2000);
+  tft.fillScreen(ST77XX_BLACK);
 #if 0
   delay(500);
 
@@ -131,7 +331,8 @@ void setup(void) {
   Serial.println("done");
   delay(1000);
 #endif
-  draw_player();
+  start_game();
+  draw_game();
 }
 
 void loop() {
@@ -155,59 +356,55 @@ void loop() {
   Serial.println();
 #endif
   if (left_btn && !left_old) {
-    if (moving_x > 0) {
-      moving_x = 0;
-      moving_y = -1;
-    } else if (moving_x < 0) {
-      moving_x = 0;
-      moving_y = 1;
-    } else if (moving_y > 0) {
-      moving_x = 1;
-      moving_y = 0;
-    } else if (moving_y < 0) {
-      moving_x = -1;
-      moving_y = 0;
+    player_dir = player_dir-1;
+    if (player_dir < 0) {
+      player_dir = direction_count-1; // kept turning left from first direction; now looking in last direction.
     }
   }
   if (right_btn && !right_old) {
-    if (moving_x > 0) {
-      moving_x = 0;
-      moving_y = 1;
-    } else if (moving_x < 0) {
-      moving_x = 0;
-      moving_y = -1;
-    } else if (moving_y > 0) {
-      moving_x = -1;
-      moving_y = 0;
-    } else if (moving_y < 0) {
-      moving_x = 1;
-      moving_y = 0;
+    player_dir = player_dir+1;
+    if (player_dir >= direction_count) {
+      player_dir = 0; // kept turning right from last direction, now looking back in first direction again.
     }
   }
 #ifdef DEBUG_MOVING
-  Serial.print("moving_x: ");
-  Serial.print(moving_x);
-  Serial.print(", moving_y: ");
-  Serial.println(moving_y);
+  Serial.print("player_cell.x: ");
+  Serial.print(player_cell.x);
+  Serial.print(", player_cell.y: ");
+  Serial.println(player_cell.y);
 #endif
   right_old = right_btn;
   left_old = left_btn;
 
-  player_x += moving_x;
-  player_y += moving_y;
-  if (player_x < 0) {
-    player_x = 0;
+  walk_player();
+
+  pill_event.counter++;
+  if (pill_event.counter >= pill_event.target) {
+    bool pill_ok;
+    int cell_idx;
+
+    pill_event.counter = 0;
+    // place a new pill, but not on the worm.
+    do {
+      if (pill_cell.x != -1 ||
+          pill_cell.y != -1) {
+          missed_cell.x = pill_cell.x;
+          missed_cell.y = pill_cell.y;
+      }
+      pill_cell.x = random(0, CELLS_X);
+      pill_cell.y = random(0, CELLS_Y);
+      pill_ok = true;
+      for (cell_idx = 0; cell_idx < worm_cell_count; cell_idx++) {
+        if (worm_cells[cell_idx].x == pill_cell.x &&
+            worm_cells[cell_idx].y == pill_cell.y) {
+          pill_ok = false;
+          break;
+        }
+      }
+    } while (!pill_ok);
+
   }
-  if (player_y < 0) {
-    player_y = 0;
-  }
-  if (player_x >= MAX_X) {
-    player_x = MAX_X-1;
-  }
-  if (player_y >= MAX_Y) {
-    player_y = MAX_Y-1;
-  }
-  draw_player();
+  draw_game();
 
   delay(100);
 }
@@ -254,11 +451,24 @@ void testlines(uint16_t color) {
   }
 }
 
-void testdrawtext(char *text, uint16_t color) {
-  tft.setCursor(0, 0);
+#define LINE_PIXELS 20
+void our_drawtext(char *text, int line, uint16_t color) {
+  //int char_count;
+
+  //char_count = strlen(text);
+  tft.setTextSize(3);
+  tft.setCursor(10, PIXELS_Y/2 + line*24);
   tft.setTextColor(color);
   tft.setTextWrap(true);
   tft.print(text);
+}
+
+void our_drawnum(int num, uint16_t color) {
+  tft.setTextSize(4);
+  tft.setCursor(0, 0);
+  tft.setTextColor(color);
+  tft.setTextWrap(true);
+  tft.print(num);
 }
 
 void testfastlines(uint16_t color1, uint16_t color2) {
