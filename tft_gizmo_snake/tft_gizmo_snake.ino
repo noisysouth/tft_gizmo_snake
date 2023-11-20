@@ -21,6 +21,7 @@
 #include "pitches.h"
 
 //#define DEBUG_BUTTONS
+//#define DEBUG_ACCEL
 //#define DEBUG_MOVING
 //#define DEBUG_SEGMENTS
 
@@ -161,6 +162,24 @@ bool left_btn;
 bool right_btn;
 bool left_old;
 bool right_old;
+
+#define ACCEL_FLAT 2.2
+// between ACCEL_FLAT and -ACCEL_FLAT, don't change the worm's direction.
+// >ACCEL_FLAT, point worm positive direction (right or down)
+// <-ACCEL_FLAT, point worm negative direction (left or up)
+#define ACCEL_JUMP 2.2
+// if x or y changes by more than ACCEL_JUMP,
+// consider that a command to move in that + or - x or y direction.
+// (overrides absolute tilt above, to be more responsive.)
+float x_accel;
+float y_accel;
+float z_accel; // unused
+float x_old;
+float y_old;
+float x_delta; // from flat
+float y_delta;
+float x_jump; // since last iteration
+float y_jump;
 
 // game state
 struct game_cell_s {
@@ -463,6 +482,8 @@ void setup(void) {
 }
 
 void loop() {
+  float x_move;
+  float y_move;
   // we are looking at the screen side. so swap right and left.
   right_btn = CircuitPlayground.leftButton();
   left_btn = CircuitPlayground.rightButton();
@@ -482,6 +503,19 @@ void loop() {
   }
   Serial.println();
 #endif
+
+  x_accel = CircuitPlayground.motionX();
+  y_accel = CircuitPlayground.motionY();
+  z_accel = CircuitPlayground.motionZ();
+#ifdef DEBUG_ACCEL
+  Serial.print("X Accel: ");
+  Serial.print(x_accel);
+  Serial.print(", Y Accel: ");
+  Serial.print(y_accel);
+  Serial.print(", Z Accel: ");
+  Serial.println(z_accel);
+#endif
+
   if (left_btn && !left_old) {
     player_dir = player_dir-1;
     if (player_dir < 0) {
@@ -494,6 +528,73 @@ void loop() {
       player_dir = 0; // kept turning right from last direction, now looking back in first direction again.
     }
   }
+
+  x_delta = 0;
+  y_delta = 0;
+  // find if we are tilted, but not moving in that direction
+  if (x_accel > ACCEL_FLAT && player_dir != dir_east) {
+      x_delta = x_accel;
+  }
+  if (x_accel < -ACCEL_FLAT && player_dir != dir_west) {
+      x_delta = x_accel;
+  }
+  if (y_accel > ACCEL_FLAT && player_dir != dir_south) {
+      y_delta = y_accel;
+  }
+  if (y_accel < -ACCEL_FLAT && player_dir != dir_north) {
+      y_delta = y_accel;
+  }
+  // Note: This causes the effect if we are diagonal,
+  // we will keep switching between x and y directions in a 'staircase' effect.
+  //  (Kind of cool, actually.)
+
+  // find if the amount of tilt changed quickly
+  // Note: if you speed up the main loop, this response will change.
+  x_jump = (x_accel - x_old);
+  if (fabs(x_jump) < ACCEL_JUMP) {
+    x_jump = 0;
+  }
+  y_jump = (y_accel - y_old);
+  if (fabs(y_jump) < ACCEL_JUMP) {
+    y_jump = 0;
+  }
+
+  // let strong tilt in one direction override
+  //      minor tilt in another direction
+  x_move = 0;
+  y_move = 0;
+  if (fabs(x_delta) > fabs(y_delta)) {
+    x_move = x_delta;
+  } else if (fabs(y_delta) > fabs(x_delta)) {
+    y_move = y_delta;
+  }
+
+  // let fast increases in tilt override
+  //   absolute tilt value
+  if (fabs(x_jump) > fabs(y_jump)) {
+    x_move = x_jump;
+    y_move = 0;
+  } else if (fabs(y_jump) > fabs(x_jump)) {
+    x_move = 0;
+    y_move = y_jump;
+  }
+
+  // face the direction that was tilted the fastest,
+  //  or if none tilted fast, the way we are most tilted.
+  if (x_move > 0) {
+    player_dir = dir_east;
+  }
+  if (x_move < 0) {
+    player_dir = dir_west;
+  }
+  if (y_move > 0) {
+    player_dir = dir_south;
+  }
+  if (y_move < 0) {
+    player_dir = dir_north;
+  }
+  // Note: z_accel currently unused
+
 #ifdef DEBUG_MOVING
   Serial.print("player_cell.x: ");
   Serial.print(player_cell.x);
@@ -501,7 +602,9 @@ void loop() {
   Serial.println(player_cell.y);
 #endif
   right_old = right_btn;
-  left_old = left_btn;
+  left_old  =  left_btn;
+  x_old = x_accel;
+  y_old = y_accel;
 
   walk_player();
 
